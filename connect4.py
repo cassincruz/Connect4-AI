@@ -2,7 +2,11 @@
 import numpy as np 
 import matplotlib.pyplot as plt
 from scipy.signal import convolve2d
-#%%
+import pandas as pd
+import torch
+from torch.utils.data import Dataset
+
+#%% Defining core Connect4Game class
 class Connect4Game :
 
     def __init__(self, *players, draw=False, print_results=False) :
@@ -21,7 +25,8 @@ class Connect4Game :
     # Resets the game board and move record to begin new game between (optionally) given players.
     # If one player given, player plays against itself. If no players given, a random game is played.
         if len(players) == 0 :
-            self.players = [Agent(), Agent()]
+            if hasattr(self, 'players') : pass
+            else: self.players = [Agent(), Agent()]
         
         elif len(players) == 1 :
             self.players = (players[0], players[0])
@@ -32,11 +37,11 @@ class Connect4Game :
         else : 
             if self.settings['Print'] : print("Cannot have more than two players.") 
             
-        self.board = np.zeros((6,7))
+        self.board = np.zeros((6,7)).astype(int)
         self.available_moves = np.arange(7)
         
-        self.board_record = [self.board]
-        self.move_record = np.array([])
+        self.board_record = np.array([self.board])
+        self.move_record = np.array([]).astype(int)
         self.move_number = 1
         self.current_color = 1 # 1=P1, -1=P2, 0=empty
         
@@ -57,7 +62,10 @@ class Connect4Game :
     # Current color plays move at position 'move'. Updates board, move record, etc.
     def play_move(self, col) : 
         self.board = self.move(col)
-        self.board_record.append(self.board)
+
+        self.board_record = np.vstack((self.board_record, [self.board]))
+        self.move_record = np.append(self.move_record, col)
+        self.available_moves = [n for n in range(7) if sum(abs(self.board[:,n])) < 6]
         
         # Check for 4 in a row using convolution
         patterns = [np.ones((1,4)), np.ones((4,1)), np.diag(np.ones(4)), np.fliplr(np.diag(np.ones(4)))]
@@ -71,17 +79,13 @@ class Connect4Game :
             
         # Updating game attributes
         else :
-            self.available_moves = [n for n in range(7) if sum(abs(self.board[:,n])) < 6]
             self.move_number += 1
-            self.move_record = np.append(self.move_record, col)
             self.current_color *= -1
 
-    
-    #TODO
-    # Play a sequence of moves and return array of boards. 
+    # Play a sequence of moves.
     def play_moves(self, moves) :
-        pass
-
+        for move in moves : 
+            self.play_move(int(move))
     
     # Plays a game between two players. Returns move record and the color code of the winner (1 for P1, -1 for P2, 0 for Draw).
     def play_game(self) : 
@@ -96,10 +100,10 @@ class Connect4Game :
             
         if len(self.available_moves)==0 : 
             if self.settings['Print'] : print("It's a draw!")
-            return 0
         
         return self.winner
     
+    #TODO
     def draw(self) : 
         #self.ax.imshow(self.board)
         self.img.set_data(self.board)
@@ -117,23 +121,74 @@ class Agent :
     def __init__(self, engine=None, prob=True): 
         
         if engine == None :
-            self.engine = lambda board : 1.0 # Default to constant value, to produce random moves
+            self.engine = lambda board : 0.0 # Default to constant value, to produce random moves
         else : 
             self.engine = engine
         
+        normalize = lambda v : v/v.sum()
         if prob == True :
-            normalize = lambda v : v/v.sum()
             self.prob = lambda vals : normalize((vals+1)/2)
         elif prob == False : 
-            self.prob = lambda vals : vals == vals.max()
+            self.prob = lambda vals : normalize(vals == vals.max())
         else :
             self.prob = prob
 
     def evaluate(self, game): # From the current board position, calculates the value of each of the available moves
-        return np.array([self.engine(game.move(c)) for c in game.available_moves])
+        return np.array([self.engine(game.move(c))*game.current_color for c in game.available_moves])
 
     def submit_move(self, game) :
         values = self.evaluate(game)
         
         return np.random.choice(game.available_moves, p=self.prob(values))
+
+#%%
+class C4Data(Dataset) : 
+    
+    def __init__(self, games, winners, Lambda=0.9, T=lambda x:torch.Tensor(x)) : 
+        # games should be an array of move records. Winners should be an array of game winners.
+        self.T = T
+        self.read_data(games, winners, Lambda)
+        
+    def __len__(self) :
+        # Returns the total number of samples
+        return self.Data.shape[0]
+    
+    def __getitem__(self, index) :
+        # Generates one sample of data
+        board = ID2Board(self.Data.ID.iloc[index])
+        
+        X = self.T(board) 
+        y = self.Data.Value.iloc[index]
+        return X, y
+    
+    def read_data(self, games, winners, Lambda) :
+        # games should be a list of move records. 
+        # winners should be a list of winners (1, -1, or 0 for draw).
+        # Lambda should be a positive number between 0 and 1.
+        IDs, Values = [], []
+
+        C4 = Connect4Game()
+        for i in range(len(winners)) :
+            moves = games[i]
+            result = winners[i]
+
+            C4.reset()
+            C4.play_moves(moves)
+
+            # Adding additional boards for LR and inversion symmetries (x4)
+            boards = C4.board_record.copy()
+            boards = np.vstack((boards, [np.fliplr(board) for board in boards]))
+            boards = np.vstack((boards, [-board for board in boards]))
+            
+            game_IDs = [Board2ID(board) for board in boards]
+            IDs.extend(game_IDs)
+
+            game_values = result * Lambda**np.arange(len(moves), -1, -1)
+            Values.extend(game_values.tolist()*2 + (-game_values).tolist()*2) 
+        
+        data = pd.DataFrame(data={'ID':IDs, 'Value':Values})
+        self.Data = data.groupby('ID').Value.mean().reset_index()
+#%% ID functions
+Board2ID = lambda board: ''.join(board.reshape(-1).astype(int).astype(str).tolist()).replace('-1', '2')
+ID2Board = lambda ID: np.array([int(n) if n !='2' else -1 for n in ID]).reshape((6,7))
 # %%
