@@ -53,17 +53,22 @@ class Agent() :
 
         self.mem_cntr += 1
 
+    def _evaluate(self, observation, info) : 
+        state = observation['board'] * info['active color']
+        state = torch.reshape(state.flatten(), (1, -1)).type(torch.float).to(self.Q_eval.device)
+        action_values = self.Q_eval.forward(state)
+
+        return action_values
+
     def choose_action(self, observation, info) : 
         self.action_space = info['available actions']
 
         if np.random.random() > self.epsilon : 
-            state = observation['board'] * info['active color']
-            state = torch.reshape(state.flatten(), (1, -1)).type(torch.float).to(self.Q_eval.device)
-            actions = self.Q_eval.forward(state)
+            action_values = self._evaluate(observation, info)
 
             # Masking to only choose from available actions
             mask = torch.Tensor([0 if action in self.action_space else -np.inf for action in range(7)]).to(self.Q_eval.device)
-            action = torch.argmax(actions + mask).item()
+            action = torch.argmax(action_values + mask).item()
         
         else : 
             action = np.random.choice(self.action_space)
@@ -89,8 +94,6 @@ class Agent() :
         infos.append(copy.deepcopy(info_))
         observation, info = observation_, info_
 
-        n_moves = 1
-
         # Begin learning loop
         while not done : 
             action  = self.choose_action(observation, info)
@@ -107,15 +110,13 @@ class Agent() :
                                       reward, observation_, done)
             observation, info = observation_, info_
 
-            n_moves += 1
-
         # Store transition for other player (win and loss both get recorded)
         if store_transitions : 
             self.store_transition(observations.pop(0), infos.pop(0), actions.pop(0), 
                                   reward, observation_, done)
             
         # Return game length
-        return n_moves
+        return observation['turn'] - 1
     
     def learn(self, batch=[], n_steps=1, dec_eps=True, return_loss=False) : 
         """
@@ -183,6 +184,8 @@ def play_agent(agent, env, opp="random") :
     epsilon = agent.epsilon
     agent.epsilon = 0
 
+    actions = []
+
     done = False
     observation, info = env.reset()
 
@@ -193,16 +196,18 @@ def play_agent(agent, env, opp="random") :
         
         action = np.random.choice(info['available actions']) if opp != "human" else int(input("What move?"))
         observation, reward, terminated, truncated, info = env.step(action)
+        actions.append(action)
         done = terminated or truncated 
 
         if not done : 
             action = agent.choose_action(observation, info)
             observation, reward, terminated, truncated, info = env.step(action)
+            actions.append(action)
             done = terminated or truncated 
 
     agent.epsilon = epsilon 
 
-    return (reward, observation['board'])
+    return (reward, actions)
 
 def rand_validate(agent, env, n_games) : 
     winners = []
@@ -218,7 +223,7 @@ def rand_validate(agent, env, n_games) :
 if __name__ == '__main__' : 
     env = gym.make('Connect4-v0')
     network = CNN_B()
-    network.load_state_dict(torch.load('97wr_cnn_b.pt', map_location=network.device))
+    network.load_state_dict(torch.load('./weights/98wr_cnn_b.pt', map_location=network.device))
 
     agent_params = dict(
         gamma=0.9, 
