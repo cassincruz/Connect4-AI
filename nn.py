@@ -65,6 +65,7 @@ class SimpleCNN(nn.Module) :
 
         # Want to return raw estimates, not activated
         return actions
+
 #%%
 class CNN_B(nn.Module) : 
     def __init__(self, lr=1e-5) : 
@@ -88,4 +89,38 @@ class CNN_B(nn.Module) :
         actions = self.fc2(x)
 
         return actions
+
+#%%
+class CNN_C(nn.Module) : 
+    def __init__(self, lr=1e-5) : 
+
+        super(CNN_C, self).__init__()
+        self.conv = nn.Conv2d(1, 128, 4)
+        self.dropout1 = nn.Dropout2d(0.2)
+        self.fc1 = nn.Linear(128 * 3 * 4, 128)
+        self.dropout2 = nn.Dropout(0.2)
+        self.fc2 = nn.Linear(128, 128)
+        self.dropout3 = nn.Dropout(0.2)
+        self.fc3 = nn.Linear(128, 7)
+
+        self.optimizer = optim.AdamW(self.parameters(), lr=lr, weight_decay=0.2)
+        self.loss = nn.MSELoss()
+        self.device = torch.device('mps' if torch.backends.mps.is_built() else 'cuda' if torch.cuda.is_available() else 'cpu')
+        self.to(self.device)
+
+    def forward(self, state) : 
+        x = torch.reshape(state, (-1, 1, 6, 7))
+        x = F.leaky_relu(self.conv(x))
+        x = self.dropout1(x)
+        x = torch.reshape(x, (state.shape[0], -1))
+        x = F.relu(self.fc1(x))
+        x = self.dropout2(x)
+        x = F.relu(self.fc2(x))
+        x = self.dropout3(x)
+
+        actions = self.fc3(x)
+
+        return actions
+# %%
+cnn = CNN_C()
 # %%
